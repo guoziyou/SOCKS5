@@ -16,28 +16,9 @@ fi
 CONFIG_DIR="/etc/hysteria"
 CONFIG_FILE="$CONFIG_DIR/config.yaml"
 SERVICE_FILE="/etc/systemd/system/hysteria-server.service"
-HYSTERIA_VERSION="2.5.1"
-
-# 检测系统架构
-ARCH=$(uname -m)
-case "$ARCH" in
-    x86_64)
-        DOWNLOAD_URL="https://github.com/apernet/hysteria/releases/download/v$HYSTERIA_VERSION/hysteria-linux-amd64"
-        BACKUP_URL="https://ghproxy.com/https://github.com/apernet/hysteria/releases/download/v$HYSTERIA_VERSION/hysteria-linux-amd64"
-        ;;
-    aarch64)
-        DOWNLOAD_URL="https://github.com/apernet/hysteria/releases/download/v$HYSTERIA_VERSION/hysteria-linux-arm64"
-        BACKUP_URL="https://ghproxy.com/https://github.com/apernet/hysteria/releases/download/v$HYSTERIA_VERSION/hysteria-linux-arm64"
-        ;;
-    arm*)
-        DOWNLOAD_URL="https://github.com/apernet/hysteria/releases/download/v$HYSTERIA_VERSION/hysteria-linux-arm"
-        BACKUP_URL="https://ghproxy.com/https://github.com/apernet/hysteria/releases/download/v$HYSTERIA_VERSION/hysteria-linux-arm"
-        ;;
-    *)
-        echo -e "${RED}错误：不支持的系统架构 ($ARCH)！${NC}"
-        exit 1
-        ;;
-esac
+HYSTERIA_VERSION="2.6.1"
+DOWNLOAD_URL="https://github.com/apernet/hysteria/releases/download/app/v$HYSTERIA_VERSION/hysteria-linux-amd64"
+BACKUP_URL="https://ghproxy.com/https://github.com/apernet/hysteria/releases/download/app/v$HYSTERIA_VERSION/hysteria-linux-amd64"
 
 # 生成随机密码
 HY2_PASSWORD=$(openssl rand -base64 12)
@@ -63,18 +44,22 @@ apt-get install -y curl openssl libc6 || {
     exit 1
 }
 
-# 下载 Hysteria2（带重试和备用 URL）
-echo -e "${YELLOW}正在下载 Hysteria2 v$HYSTERIA_VERSION（架构：$ARCH）...${NC}"
+# 下载 Hysteria2
+echo -e "${YELLOW}正在下载 Hysteria2 v$HYSTERIA_VERSION（架构：x86_64）...${NC}"
 for url in "$DOWNLOAD_URL" "$BACKUP_URL"; do
-    curl -L -o /usr/local/bin/hysteria "$url" && break
-    echo -e "${YELLOW}下载失败，尝试备用 URL...${NC}"
-    sleep 2
+    if curl -L -o /usr/local/bin/hysteria "$url"; then
+        echo -e "${GREEN}下载成功！${NC}"
+        break
+    else
+        echo -e "${YELLOW}下载失败，尝试备用 URL...${NC}"
+        sleep 2
+    fi
 done
 
 # 验证下载文件
 if [ ! -s /usr/local/bin/hysteria ] || [ $(stat -c %s /usr/local/bin/hysteria) -lt 1000000 ]; then
-    echo -e "${RED}错误：Hysteria2 下载文件为空或过小（可能网络受限）！${NC}"
-    echo -e "${YELLOW}请尝试手动下载：$DOWNLOAD_URL${NC}"
+    echo -e "${RED}错误：Hysteria2 下载文件为空或过小！${NC}"
+    echo -e "${YELLOW}请手动下载：$DOWNLOAD_URL 或 $BACKUP_URL${NC}"
     exit 1
 fi
 
@@ -83,7 +68,7 @@ chmod +x /usr/local/bin/hysteria
 # 检查 Hysteria2 是否可执行
 if ! /usr/local/bin/hysteria version &> /dev/null; then
     echo -e "${RED}错误：Hysteria2 二进制文件不可执行，可能文件损坏！${NC}"
-    echo -e "${YELLOW}请尝试手动下载并替换：$DOWNLOAD_URL${NC}"
+    echo -e "${YELLOW}请手动下载：$DOWNLOAD_URL 或 $BACKUP_URL${NC}"
     exit 1
 fi
 
