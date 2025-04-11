@@ -1,3 +1,7 @@
+sudo apt install wget   wget安装
+
+
+
 bash <(wget -qO- https://raw.githubusercontent.com/guoziyou/SOCKS5/refs/heads/main/ss.sh)  ss节点
 
 
