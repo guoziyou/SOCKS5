@@ -1,75 +1,62 @@
 #!/bin/bash
 
-# 颜色定义
-RED='\033[0;31m'
+# 一些颜色定义
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+RED='\033[0;31m'
 NC='\033[0m'
 
-# 必须以root运行
+# 检查 root 权限
 if [ "$(id -u)" != "0" ]; then
-    echo -e "${RED}错误：请以root用户运行此脚本！${NC}"
+    echo -e "${RED}错误：请以 root 用户运行此脚本！${NC}"
     exit 1
 fi
 
-# 手动输入端口
-read -p "$(echo -e ${YELLOW}请输入要使用的端口: ${NC})" HY_PORT
-if [[ -z "$HY_PORT" ]]; then
-    echo -e "${RED}端口不能为空！${NC}"
+# 用户输入端口
+read -p "请输入 Hy2 节点端口: " PORT
+if [[ -z "$PORT" ]]; then
+    echo -e "${RED}端口不能为空，退出。${NC}"
     exit 1
 fi
 
-# 自动生成强随机密码
-HY_PASSWORD=$(openssl rand -hex 12)
+# 自动生成密码
+PASSWORD=$(openssl rand -hex 8)
 
 # 安装依赖
-echo -e "${YELLOW}正在安装依赖...${NC}"
-apt update -y
-apt install -y curl wget unzip tar
+echo -e "${YELLOW}安装依赖...${NC}"
+apt update -y && apt install -y curl wget tar
 
-# 下载最新hysteria核心
-echo -e "${YELLOW}正在下载 Hysteria2 核心...${NC}"
-ARCH=$(uname -m)
-if [[ "$ARCH" == "x86_64" ]]; then
-    ARCH="amd64"
-elif [[ "$ARCH" == "aarch64" ]]; then
-    ARCH="arm64"
-else
-    echo -e "${RED}暂不支持的架构：$ARCH${NC}"
-    exit 1
-fi
-
+# 下载 hysteria
+echo -e "${YELLOW}正在下载 Hysteria2...${NC}"
 mkdir -p /usr/local/hysteria
 cd /usr/local/hysteria
-
-HY_LATEST=$(curl -s https://api.github.com/repos/apernet/hysteria/releases/latest | grep browser_download_url | grep linux-$ARCH | grep -v .sig | cut -d '"' -f 4)
-wget -O hysteria.tar.gz "$HY_LATEST"
-tar -xzf hysteria.tar.gz
+curl -L -o hysteria.tar.gz https://github.com/apernet/hysteria/releases/latest/download/hysteria-linux-amd64.tar.gz
+tar -xzvf hysteria.tar.gz
 chmod +x hysteria
-rm -f hysteria.tar.gz
+ln -sf /usr/local/hysteria/hysteria /usr/bin/hysteria
 
-# 创建配置文件
+# 生成自签 TLS 证书
+echo -e "${YELLOW}生成自签 TLS 证书...${NC}"
 mkdir -p /etc/hysteria
+openssl req -x509 -newkey rsa:2048 -days 365 -nodes \
+  -keyout /etc/hysteria/key.pem -out /etc/hysteria/cert.pem \
+  -subj "/CN=bing.com"
+
+# 生成配置文件
 cat > /etc/hysteria/config.yaml <<EOF
-listen: :$HY_PORT
-protocol: hy2
+listen: :$PORT
 tls:
-  cert: /etc/hysteria/fullchain.crt
-  key: /etc/hysteria/private.key
+  cert: /etc/hysteria/cert.pem
+  key: /etc/hysteria/key.pem
 auth:
   type: password
-  password: $HY_PASSWORD
+  password: $PASSWORD
 masquerade:
   type: proxy
-  url: https://www.bing.com
-  rewriteHost: true
+  proxy:
+    url: https://bing.com
+    rewriteHost: true
 EOF
-
-# 生成 TLS 证书（自签名）
-echo -e "${YELLOW}正在生成自签名 TLS 证书...${NC}"
-openssl req -newkey rsa:2048 -nodes -keyout /etc/hysteria/private.key \
-    -x509 -days 3650 -out /etc/hysteria/fullchain.crt \
-    -subj "/C=CN/ST=Hysteria/L=Server/O=SelfSigned/CN=$(hostname)"
 
 # 创建 systemd 服务
 cat > /etc/systemd/system/hysteria.service <<EOF
@@ -79,8 +66,8 @@ After=network.target
 
 [Service]
 ExecStart=/usr/local/hysteria/hysteria server -c /etc/hysteria/config.yaml
-Restart=always
-User=root
+Restart=on-failure
+LimitNOFILE=40960
 
 [Install]
 WantedBy=multi-user.target
@@ -91,21 +78,22 @@ systemctl daemon-reload
 systemctl enable hysteria
 systemctl restart hysteria
 
-# 获取服务器公网 IP
-SERVER_IP=$(curl -s ifconfig.me || curl -s ip.sb)
-if [ -z "$SERVER_IP" ]; then
-    SERVER_IP="YOUR.SERVER.IP"
-    echo -e "${YELLOW}警告：未能自动获取公网IP，请手动替换节点链接中的 IP。${NC}"
+# 检查运行状态
+if systemctl is-active --quiet hysteria; then
+    echo -e "${GREEN}✅ Hysteria2 服务已启动成功！${NC}"
+else
+    echo -e "${RED}❌ Hysteria2 启动失败，请检查配置。${NC}"
+    journalctl -u hysteria --no-pager
+    exit 1
 fi
 
-# 生成 hy2 节点链接
-HY_URI="hy2://$HY_PASSWORD@$SERVER_IP:$HY_PORT?insecure=1&obfs=bing.com"
+# 获取公网IP
+SERVER_IP=$(curl -s ifconfig.me || echo "YOUR_SERVER_IP")
 
-# 输出信息
-echo -e "\n${GREEN}Hysteria2 节点部署完成！${NC}"
+# 输出连接信息
+echo -e "\n${GREEN}🎉 Hy2 节点部署完成！${NC}"
 echo -e "服务器IP: ${SERVER_IP}"
-echo -e "端口: ${HY_PORT}"
-echo -e "密码: ${HY_PASSWORD}"
-echo -e "节点链接:\n${YELLOW}$HY_URI${NC}\n"
-echo -e "${YELLOW}提示：建议使用自签名证书时，在客户端设置 insecure=true${NC}"
-echo -e "${YELLOW}防火墙提示：请放行端口 $HY_PORT${NC}"
+echo -e "端口: $PORT"
+echo -e "密码: $PASSWORD"
+echo -e "节点链接: hy2://$PASSWORD@$SERVER_IP:$PORT?insecure=1&obfs=bing.com"
+echo -e "${YELLOW}提示：请在客户端设置 insecure=true 以跳过自签 TLS 校验。${NC}"
