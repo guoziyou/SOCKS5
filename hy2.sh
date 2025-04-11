@@ -17,7 +17,24 @@ CONFIG_DIR="/etc/hysteria"
 CONFIG_FILE="$CONFIG_DIR/config.yaml"
 SERVICE_FILE="/etc/systemd/system/hysteria-server.service"
 HYSTERIA_VERSION="2.5.1" # 可根据需要更新为最新版本
-DOWNLOAD_URL="https://github.com/apernet/hysteria/releases/download/v$HYSTERIA_VERSION/hysteria-linux-amd64"
+
+# 检测系统架构
+ARCH=$(uname -m)
+case "$ARCH" in
+    x86_64)
+        DOWNLOAD_URL="https://github.com/apernet/hysteria/releases/download/v$HYSTERIA_VERSION/hysteria-linux-amd64"
+        ;;
+    aarch64)
+        DOWNLOAD_URL="https://github.com/apernet/hysteria/releases/download/v$HYSTERIA_VERSION/hysteria-linux-arm64"
+        ;;
+    arm*)
+        DOWNLOAD_URL="https://github.com/apernet/hysteria/releases/download/v$HYSTERIA_VERSION/hysteria-linux-arm"
+        ;;
+    *)
+        echo -e "${RED}错误：不支持的系统架构 ($ARCH)！${NC}"
+        exit 1
+        ;;
+esac
 
 # 生成随机密码
 HY2_PASSWORD=$(openssl rand -base64 12)
@@ -38,22 +55,29 @@ done
 # 更新系统并安装依赖
 echo -e "${YELLOW}正在更新系统并安装依赖...${NC}"
 apt-get update -y
-apt-get install -y curl openssl || {
+apt-get install -y curl openssl libc6 || {
     echo -e "${RED}错误：依赖安装失败，请检查网络或包源！${NC}"
     exit 1
 }
 
 # 下载并安装 Hysteria2
-echo -e "${YELLOW}正在下载 Hysteria2 v$HYSTERIA_VERSION...${NC}"
+echo -e "${YELLOW}正在下载 Hysteria2 v$HYSTERIA_VERSION（架构：$ARCH）...${NC}"
 curl -L -o /usr/local/bin/hysteria "$DOWNLOAD_URL" || {
-    echo -e "${RED}错误：Hysteria2 下载失败，请检查网络！${NC}"
+    echo -e "${RED}错误：Hysteria2 下载失败，请检查网络或 GitHub 访问！${NC}"
     exit 1
 }
+
+# 验证下载文件
+if [ ! -s /usr/local/bin/hysteria ]; then
+    echo -e "${RED}错误：Hysteria2 下载文件为空或无效！${NC}"
+    exit 1
+fi
+
 chmod +x /usr/local/bin/hysteria
 
-# 检查 Hysteria2 是否安装成功
-if ! command -v hysteria &> /dev/null; then
-    echo -e "${RED}错误：Hysteria2 安装失败！${NC}"
+# 检查 Hysteria2 是否可执行
+if ! /usr/local/bin/hysteria version &> /dev/null; then
+    echo -e "${RED}错误：Hysteria2 二进制文件不可执行，可能架构不匹配或文件损坏！${NC}"
     exit 1
 fi
 
@@ -108,6 +132,10 @@ After=network.target
 Type=simple
 ExecStart=/usr/local/bin/hysteria server -c $CONFIG_FILE
 Restart=on-failure
+# 提高 LXC 容器兼容性
+NoNewPrivileges=yes
+PrivateUsers=no
+ProtectSystem=full
 
 [Install]
 WantedBy=multi-user.target
@@ -124,6 +152,7 @@ if systemctl is-active --quiet hysteria-server; then
 else
     echo -e "${RED}错误：Hysteria2 服务启动失败！${NC}"
     systemctl status hysteria-server
+    echo -e "${YELLOW}提示：如果你在 LXC 容器中运行，可能需要检查容器权限或网络配置！${NC}"
     exit 1
 fi
 
@@ -147,5 +176,5 @@ echo -e "节点链接: ${HY2_LINK}\n"
 echo -e "${YELLOW}请保存节点链接以便客户端使用！${NC}"
 
 # 提示防火墙设置
-echo -e "${YELLOW}提示：请确保防火墙允许端口 $HY2_PORT (如使用 ufw：ufw allow $HY2_PORT)${NC}"
-echo -e "${YELLOW}如果使用 UDP 流量，请确保防火墙允许 UDP 端口 $HY2_PORT${NC}"
+echo -e "${YELLOW}提示：请确保防火墙允许端口 $HY2_PORT 的 UDP 流量 (如使用 ufw：ufw allow $HY2_PORT/udp)${NC}"
+echo -e "${YELLOW}如果在云服务器上，请检查安全组是否允许 UDP 端口 $HY2_PORT${NC}"
