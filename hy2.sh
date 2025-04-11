@@ -16,19 +16,22 @@ fi
 CONFIG_DIR="/etc/hysteria"
 CONFIG_FILE="$CONFIG_DIR/config.yaml"
 SERVICE_FILE="/etc/systemd/system/hysteria-server.service"
-HYSTERIA_VERSION="2.5.1" # 可根据需要更新为最新版本
+HYSTERIA_VERSION="2.5.1"
 
 # 检测系统架构
 ARCH=$(uname -m)
 case "$ARCH" in
     x86_64)
         DOWNLOAD_URL="https://github.com/apernet/hysteria/releases/download/v$HYSTERIA_VERSION/hysteria-linux-amd64"
+        BACKUP_URL="https://ghproxy.com/https://github.com/apernet/hysteria/releases/download/v$HYSTERIA_VERSION/hysteria-linux-amd64"
         ;;
     aarch64)
         DOWNLOAD_URL="https://github.com/apernet/hysteria/releases/download/v$HYSTERIA_VERSION/hysteria-linux-arm64"
+        BACKUP_URL="https://ghproxy.com/https://github.com/apernet/hysteria/releases/download/v$HYSTERIA_VERSION/hysteria-linux-arm64"
         ;;
     arm*)
         DOWNLOAD_URL="https://github.com/apernet/hysteria/releases/download/v$HYSTERIA_VERSION/hysteria-linux-arm"
+        BACKUP_URL="https://ghproxy.com/https://github.com/apernet/hysteria/releases/download/v$HYSTERIA_VERSION/hysteria-linux-arm"
         ;;
     *)
         echo -e "${RED}错误：不支持的系统架构 ($ARCH)！${NC}"
@@ -43,7 +46,7 @@ echo -e "${YELLOW}已生成随机密码：$HY2_PASSWORD${NC}"
 # 提示用户输入端口
 while true; do
     read -p "请输入 Hysteria2 端口（1024-65535，推荐 443）：" HY2_PORT
-    HY2_PORT=${HY2_PORT:-443} # 默认端口为 443
+    HY2_PORT=${HY2_PORT:-443}
     if [[ "$HY2_PORT" =~ ^[0-9]+$ ]] && [ "$HY2_PORT" -ge 1024 ] && [ "$HY2_PORT" -le 65535 ]; then
         echo -e "${GREEN}已设置端口：$HY2_PORT${NC}"
         break
@@ -60,16 +63,18 @@ apt-get install -y curl openssl libc6 || {
     exit 1
 }
 
-# 下载并安装 Hysteria2
+# 下载 Hysteria2（带重试和备用 URL）
 echo -e "${YELLOW}正在下载 Hysteria2 v$HYSTERIA_VERSION（架构：$ARCH）...${NC}"
-curl -L -o /usr/local/bin/hysteria "$DOWNLOAD_URL" || {
-    echo -e "${RED}错误：Hysteria2 下载失败，请检查网络或 GitHub 访问！${NC}"
-    exit 1
-}
+for url in "$DOWNLOAD_URL" "$BACKUP_URL"; do
+    curl -L -o /usr/local/bin/hysteria "$url" && break
+    echo -e "${YELLOW}下载失败，尝试备用 URL...${NC}"
+    sleep 2
+done
 
 # 验证下载文件
-if [ ! -s /usr/local/bin/hysteria ]; then
-    echo -e "${RED}错误：Hysteria2 下载文件为空或无效！${NC}"
+if [ ! -s /usr/local/bin/hysteria ] || [ $(stat -c %s /usr/local/bin/hysteria) -lt 1000000 ]; then
+    echo -e "${RED}错误：Hysteria2 下载文件为空或过小（可能网络受限）！${NC}"
+    echo -e "${YELLOW}请尝试手动下载：$DOWNLOAD_URL${NC}"
     exit 1
 fi
 
@@ -77,7 +82,8 @@ chmod +x /usr/local/bin/hysteria
 
 # 检查 Hysteria2 是否可执行
 if ! /usr/local/bin/hysteria version &> /dev/null; then
-    echo -e "${RED}错误：Hysteria2 二进制文件不可执行，可能架构不匹配或文件损坏！${NC}"
+    echo -e "${RED}错误：Hysteria2 二进制文件不可执行，可能文件损坏！${NC}"
+    echo -e "${YELLOW}请尝试手动下载并替换：$DOWNLOAD_URL${NC}"
     exit 1
 fi
 
@@ -132,7 +138,6 @@ After=network.target
 Type=simple
 ExecStart=/usr/local/bin/hysteria server -c $CONFIG_FILE
 Restart=on-failure
-# 提高 LXC 容器兼容性
 NoNewPrivileges=yes
 PrivateUsers=no
 ProtectSystem=full
