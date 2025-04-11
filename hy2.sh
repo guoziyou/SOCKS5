@@ -45,7 +45,7 @@ fi
 # 更新系统并安装依赖
 echo -e "${YELLOW}正在更新系统并安装依赖...${NC}"
 apt-get update -y
-apt-get install -y curl openssl libc6 net-tools || {
+apt-get install -y curl openssl libc6 net-tools ufw iptables || {
     echo -e "${RED}错误：依赖安装失败，请检查网络或包源！${NC}"
     exit 1
 }
@@ -55,7 +55,7 @@ echo -e "${YELLOW}正在检查 LXC 环境...${NC}"
 if [ -f "/run/systemd/system/service.d/zzz-lxc-service.conf" ]; then
     echo -e "${YELLOW}检测到 LXC 容器，尝试优化网络配置...${NC}"
     sysctl -w net.ipv4.ip_unprivileged_port_start=0 > /dev/null
-    modprobe udp_tunnel 2> /dev/null || echo -e "${YELLOW}警告：无法加载 udp_tunnel 模块，可能需要宿主机权限！${NC}"
+    modprobe udp_tunnel 2> /dev/null || echo -e "${YELLOW}警告：无法加载 udp_tunnel 模块，可能需要宿主机运行：lxc config set <容器名称> linux.kernel_modules udp_tunnel${NC}"
 fi
 
 # 下载 Hysteria2
@@ -176,16 +176,33 @@ if command -v ufw > /dev/null; then
     ufw allow $HY2_PORT/udp
     ufw reload
     echo -e "${GREEN}已通过 ufw 开放 UDP 端口 $HY2_PORT！${NC}"
+    ufw status | grep $HY2_PORT
 else
+    if ! command -v iptables > /dev/null; then
+        echo -e "${YELLOW}警告：未找到 iptables，尝试安装...${NC}"
+        apt-get install -y iptables
+    fi
     iptables -A INPUT -p udp --dport $HY2_PORT -j ACCEPT
     echo -e "${GREEN}已通过 iptables 开放 UDP 端口 $HY2_PORT！${NC}"
+    iptables -L -n -v | grep $HY2_PORT
+fi
+
+# 测试 UDP 连通性
+echo -e "${YELLOW}正在测试 UDP 端口 $HY2_PORT 的连通性...${NC}"
+timeout 5 nc -u -l $HY2_PORT > /dev/null 2>&1 &
+sleep 1
+if netstat -uln | grep ":$HY2_PORT" > /dev/null; then
+    echo -e "${GREEN}UDP 端口 $HY2_PORT 可本地监听！${NC}"
+    echo -e "${YELLOW}请从客户端运行以下命令测试连通性：${NC}"
+    echo -e "  echo \"test\" | nc -u $SERVER_IP $HY2_PORT"
+else
+    echo -e "${RED}错误：无法监听 UDP 端口 $HY2_PORT！${NC}"
+    echo -e "${YELLOW}可能原因：LXC 限制或防火墙未正确配置。${NC}"
 fi
 
 # 获取服务器公网 IP
 SERVER_IP=$(curl -s ifconfig.me || curl -s icanhazip.com || curl -s ipinfo.io/ip)
 if [ -z "$SERVER_IP" ]; then
-.“
-
     echo -e "${YELLOW}警告：无法获取公网 IP，请手动检查！${NC}"
     SERVER_IP="YOUR_SERVER_IP"
 fi
@@ -202,11 +219,14 @@ echo -e "密码: ${HY2_PASSWORD}"
 echo -e "节点链接: ${HY2_LINK}\n"
 echo -e "${YELLOW}请保存节点链接以便客户端使用！${NC}"
 
-# 提示防火墙和 LXC 注意事项
+# 提示注意事项
 echo -e "${YELLOW}注意事项：${NC}"
-echo -e "1. 如果使用云服务器，请确保安全组允许 UDP 端口 $HY2_PORT。"
-echo -e "2. 如果节点仍不通，检查客户端是否支持 IPv4 并正确配置 insecure=1。"
+echo -e "1. 如果使用云服务器，请确保安全组允许 UDP 端口 $HY2_PORT 的入站流量。"
+echo -e "2. 如果节点仍不通，请从客户端运行以下命令测试 UDP 连通性："
+echo -e "   nc -zv -u $SERVER_IP $HY2_PORT"
+echo -e "   echo \"test\" | nc -u $SERVER_IP $HY2_PORT"
+echo -e "3. 检查客户端配置，确保使用正确的 IP、端口、密码，并设置 insecure=1。"
 if [ -f "/run/systemd/system/service.d/zzz-lxc-service.conf" ]; then
-    echo -e "3. 检测到 LXC 容器，可能需宿主机运行以下命令："
+    echo -e "4. 检测到 LXC 容器，如果 UDP 仍不通，可能需宿主机运行："
     echo -e "   lxc config set <容器名称> linux.kernel_modules udp_tunnel"
 fi
