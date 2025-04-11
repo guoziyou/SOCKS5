@@ -52,10 +52,28 @@ echo -e "${GREEN}检测到架构：$HYSTERIA_ARCH${NC}"
 DOWNLOAD_URL="https://github.com/apernet/hysteria/releases/download/app/v$HYSTERIA_VERSION/hysteria-linux-$HYSTERIA_ARCH"
 BACKUP_URL="https://ghproxy.com/https://github.com/apernet/hysteria/releases/download/app/v$HYSTERIA_VERSION/hysteria-linux-$HYSTERIA_ARCH"
 
-# 检测网络栈
+# 检测网络栈（改进版）
 echo -e "${YELLOW}正在检测网络栈...${NC}"
-IPV4=$(curl -s -4 ifconfig.me 2>/dev/null)
-IPV6=$(curl -s -6 ifconfig.me 2>/dev/null)
+IPV4=""
+IPV6=""
+for svc in "ifconfig.me" "icanhazip.com" "ipinfo.io"; do
+    IPV4=$(curl -s -4 "$svc" 2>/dev/null)
+    [ -n "$IPV4" ] && break
+done
+for svc in "ifconfig.me" "icanhazip.com" "ipinfo.io"; do
+    IPV6=$(curl -s -6 "$svc" 2>/dev/null)
+    [ -n "$IPV6" ] && break
+done
+
+# 后备检测：检查本地接口
+if [ -z "$IPV4" ] || [ -z "$IPV6" ]; then
+    ip a >/dev/null 2>&1 && {
+        [ -z "$IPV4" ] && IPV4=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v "127.0.0.1" | head -n1)
+        [ -z "$IPV6" ] && IPV6=$(ip -6 addr show | grep -oP '(?<=inet6\s)[0-9a-f:]+' | grep -v "::1" | head -n1)
+    }
+fi
+
+# 判断网络栈
 if [ -n "$IPV4" ] && [ -n "$IPV6" ]; then
     NET_STACK="双栈"
     LISTEN_ADDR=":$HY2_PORT"
@@ -66,8 +84,10 @@ elif [ -n "$IPV6" ]; then
     NET_STACK="IPv6"
     LISTEN_ADDR="::$HY2_PORT"
 else
-    echo -e "${RED}错误：无法检测到公网 IPv4 或 IPv6！${NC}"
-    exit 1
+    echo -e "${YELLOW}警告：无法通过网络检测到公网 IP，默认使用 IPv4！${NC}"
+    NET_STACK="IPv4"
+    LISTEN_ADDR="0.0.0.0:$HY2_PORT"
+    IPV4="YOUR_SERVER_IP" # 提示手动设置
 fi
 echo -e "${GREEN}网络栈：$NET_STACK${NC}"
 
@@ -233,7 +253,7 @@ ufw status | grep $HY2_PORT
 # 生成节点链接
 HY2_LINK_IP4=""
 HY2_LINK_IP6=""
-if [ -n "$IPV4" ]; then
+if [ -n "$IPV4" ] && [ "$IPV4" != "YOUR_SERVER_IP" ]; then
     HY2_LINK_IP4="hysteria2://$HY2_PASSWORD@$IPV4:$HY2_PORT/?insecure=1"
 fi
 if [ -n "$IPV6" ]; then
@@ -256,10 +276,13 @@ echo -e "\n${YELLOW}请保存节点链接以便客户端使用！${NC}"
 echo -e "${YELLOW}注意事项：${NC}"
 echo -e "1. 如果使用云服务器，请确保安全组允许 UDP 端口 $HY2_PORT。"
 echo -e "2. 如果节点不通，测试 UDP 连通性："
-[ -n "$IPV4" ] && echo -e "   IPv4: nc -zv -u $IPV4 $HY2_PORT"
+[ -n "$IPV4" ] && [ "$IPV4" != "YOUR_SERVER_IP" ] && echo -e "   IPv4: nc -zv -u $IPV4 $HY2_PORT"
 [ -n "$IPV6" ] && echo -e "   IPv6: nc -zv -u $IPV6 $HY2_PORT"
 echo -e "3. 低内存（256MB）环境已优化，当前占用约 5-6MB。"
+if [ "$IPV4" = "YOUR_SERVER_IP" ]; then
+    echo -e "4. 未检测到公网 IP，请手动替换节点链接中的 'YOUR_SERVER_IP' 为实际 IP（如 194.87.2.76）。"
+fi
 if [ -f "/run/systemd/system/service.d/zzz-lxc-service.conf" ]; then
-    echo -e "4. 检测到 LXC 容器，如果 UDP 不通，可能需宿主机运行："
+    echo -e "5. 检测到 LXC 容器，如果 UDP 不通，可能需宿主机运行："
     echo -e "   lxc config set <容器名称> linux.kernel_modules udp_tunnel"
 fi
