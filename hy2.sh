@@ -20,13 +20,25 @@ HYSTERIA_VERSION="2.6.1"
 DOWNLOAD_URL="https://github.com/apernet/hysteria/releases/download/app/v$HYSTERIA_VERSION/hysteria-linux-amd64"
 BACKUP_URL="https://ghproxy.com/https://github.com/apernet/hysteria/releases/download/app/v$HYSTERIA_VERSION/hysteria-linux-amd64"
 
-# 优化内存（降低 swappiness，清理缓存）
-echo -e "${YELLOW}正在优化内存环境...${NC}"
-echo 10 > /proc/sys/vm/swappiness 2>/dev/null || true
-sync && echo 1 > /proc/sys/vm/drop_caches 2>/dev/null || true
+# 检测网络栈类型
+detect_stack_type() {
+    has_ipv4=$(ip -4 addr show | grep -v '127.0.0.1' | grep inet)
+    has_ipv6=$(ip -6 addr show | grep -v '::1' | grep inet6)
 
-# 生成随机密码（短密码减少内存开销）
-HY2_PASSWORD=$(openssl rand -base64 8)
+    if [[ -n "$has_ipv4" && -n "$has_ipv6" ]]; then
+        STACK_TYPE="dual"
+    elif [[ -n "$has_ipv6" ]]; then
+        STACK_TYPE="ipv6"
+    elif [[ -n "$has_ipv4" ]]; then
+        STACK_TYPE="ipv4"
+    else
+        echo -e "${RED}错误：未检测到可用的网络协议栈（无 IPv4/IPv6）！${NC}"
+        exit 1
+    fi
+}
+
+# 生成随机密码
+HY2_PASSWORD=$(openssl rand -base64 12)
 echo -e "${YELLOW}已生成随机密码：$HY2_PASSWORD${NC}"
 
 # 提示用户输入端口
@@ -42,25 +54,44 @@ while true; do
 done
 
 # 检查端口是否被占用
-if netstat -tuln 2>/dev/null | grep ":$HY2_PORT" > /dev/null; then
+if netstat -tuln | grep ":$HY2_PORT" > /dev/null; then
     echo -e "${RED}错误：端口 $HY2_PORT 已被占用，请选择其他端口！${NC}"
     exit 1
 fi
 
-# 更新系统并安装最小依赖
+# 更新系统并安装依赖
 echo -e "${YELLOW}正在更新系统并安装依赖...${NC}"
 apt-get update -y
-apt-get install -y --no-install-recommends curl openssl net-tools ufw || {
+apt-get install -y curl openssl libc6 net-tools ufw iptables || {
     echo -e "${RED}错误：依赖安装失败，请检查网络或包源！${NC}"
     exit 1
 }
 
-# 检测虚拟化环境
-VIRT=$(systemd-detect-virt || echo "unknown")
-echo -e "${YELLOW}检测到虚拟化环境：$VIRT${NC}"
-if [ "$VIRT" = "lxc" ] || [ "$VIRT" = "openvz" ]; then
-    echo -e "${YELLOW}优化 $VIRT 网络配置...${NC}"
-    sysctl -w net.ipv4.ip_unprivileged_port_start=0 > /dev/null 2>&1
+# 检测网络栈类型
+echo -e "${YELLOW}正在检测网络协议栈类型...${NC}"
+detect_stack_type
+echo -e "${GREEN}已检测到网络类型：$STACK_TYPE${NC}"
+
+# 设置监听地址
+case "$STACK_TYPE" in
+    dual|ipv6) LISTEN_ADDR="[::]" ;;
+    ipv4) LISTEN_ADDR="0.0.0.0" ;;
+esac
+
+# 如果是 dual 或 ipv6，检查 bindv6only
+if [[ "$LISTEN_ADDR" == "[::]" ]]; then
+    BINDV6ONLY=$(sysctl -n net.ipv6.bindv6only 2>/dev/null)
+    if [ "$BINDV6ONLY" = "1" ]; then
+        echo -e "${YELLOW}警告：bindv6only=1，IPv6 不会监听 IPv4！建议执行：sysctl -w net.ipv6.bindv6only=0${NC}"
+    fi
+fi
+
+# 配置 LXC 环境（如果适用）
+echo -e "${YELLOW}正在检查 LXC 环境...${NC}"
+if [ -f "/run/systemd/system/service.d/zzz-lxc-service.conf" ]; then
+    echo -e "${YELLOW}检测到 LXC 容器，尝试优化网络配置...${NC}"
+    sysctl -w net.ipv4.ip_unprivileged_port_start=0 > /dev/null
+    modprobe udp_tunnel 2> /dev/null || echo -e "${YELLOW}警告：无法加载 udp_tunnel 模块，可能需要宿主机运行：lxc config set <容器名称> linux.kernel_modules udp_tunnel${NC}"
 fi
 
 # 下载 Hysteria2
@@ -84,21 +115,21 @@ fi
 
 chmod +x /usr/local/bin/hysteria
 
-# 检查 Hysteria2 是否可执行
+# 检查是否可执行
 if ! /usr/local/bin/hysteria version &> /dev/null; then
     echo -e "${RED}错误：Hysteria2 二进制文件不可执行，可能文件损坏！${NC}"
     echo -e "${YELLOW}请手动下载：$DOWNLOAD_URL 或 $BACKUP_URL${NC}"
     exit 1
 fi
 
-# 停止现有 Hysteria2 服务（如果存在）
+# 停止现有服务
 systemctl stop hysteria-server &> /dev/null
 
-# 创建 Hysteria2 配置文件（双栈监听，简化配置）
+# 创建配置文件
 echo -e "${YELLOW}正在创建 Hysteria2 配置文件...${NC}"
 mkdir -p "$CONFIG_DIR"
 cat > "$CONFIG_FILE" <<EOF
-listen: :$HY2_PORT
+listen: $LISTEN_ADDR:$HY2_PORT
 
 auth:
   type: password
@@ -109,24 +140,28 @@ tls:
   key: $CONFIG_DIR/server.key
 
 fastOpen: true
+masquerade:
+  type: proxy
+  proxy:
+    url: https://www.example.com
+    rewriteHost: true
 EOF
 
-# 生成自签名证书（最小化证书）
+# 生成证书
 echo -e "${YELLOW}正在生成自签名 TLS 证书...${NC}"
 openssl req -x509 -nodes -newkey ec:<(openssl ecparam -name prime256v1) \
     -keyout "$CONFIG_DIR/server.key" \
     -out "$CONFIG_DIR/server.crt" \
     -subj "/CN=Hysteria" \
-    -days 365 || {
+    -days 3650 || {
     echo -e "${RED}错误：证书生成失败！${NC}"
     exit 1
 }
 
-# 设置文件权限
 chmod 600 "$CONFIG_DIR/server.key" "$CONFIG_DIR/server.crt"
 chmod 644 "$CONFIG_FILE"
 
-# 创建系统服务文件（降低内存优先级）
+# 创建 systemd 服务
 echo -e "${YELLOW}正在配置系统服务...${NC}"
 cat > "$SERVICE_FILE" <<EOF
 [Unit]
@@ -140,14 +175,11 @@ Restart=on-failure
 NoNewPrivileges=yes
 PrivateUsers=no
 ProtectSystem=full
-Nice=10
-OOMScoreAdjust=500
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# 重新加载 systemd 并启动服务
 systemctl daemon-reload
 systemctl enable hysteria-server
 systemctl start hysteria-server
@@ -161,17 +193,12 @@ else
     exit 1
 fi
 
-# 验证端口监听（检查 IPv4 和 IPv6）
+# 验证监听端口
 echo -e "${YELLOW}正在验证端口监听...${NC}"
-if netstat -uln | grep ":$HY2_PORT" > /dev/null; then
-    echo -e "${GREEN}端口 $HY2_PORT 已绑定！${NC}"
-    netstat -uln | grep ":$HY2_PORT" | grep -q "0.0.0.0" && echo -e "${GREEN}IPv4 支持：已启用${NC}"
-    netstat -uln | grep ":$HY2_PORT" | grep -q ":::.$HY2_PORT" && echo -e "${GREEN}IPv6 支持：已启用${NC}"
-else
-    echo -e "${RED}错误：端口 $HY2_PORT 未绑定！${NC}"
-    echo -e "${YELLOW}可能原因：虚拟化限制或端口冲突。请检查网络配置或更换端口（如 443）。${NC}"
+netstat -uln | grep ":$HY2_PORT" && echo -e "${GREEN}端口 $HY2_PORT 已监听！${NC}" || {
+    echo -e "${RED}错误：未检测到端口监听！${NC}"
     exit 1
-fi
+}
 
 # 配置防火墙
 echo -e "${YELLOW}正在配置防火墙...${NC}"
@@ -181,45 +208,39 @@ if command -v ufw > /dev/null; then
     echo -e "${GREEN}已通过 ufw 开放 UDP 端口 $HY2_PORT！${NC}"
     ufw status | grep $HY2_PORT
 else
-    apt-get install -y --no-install-recommends iptables
     iptables -A INPUT -p udp --dport $HY2_PORT -j ACCEPT
-    ip6tables -A INPUT -p udp --dport $HY2_PORT -j ACCEPT 2>/dev/null || true
-    echo -e "${GREEN}已通过 iptables 开放 UDP 端口 $HY2_PORT（IPv4 和 IPv6）！${NC}"
+    echo -e "${GREEN}已通过 iptables 开放 UDP 端口 $HY2_PORT！${NC}"
     iptables -L -n -v | grep $HY2_PORT
 fi
 
-# 获取服务器公网 IP
-SERVER_IP=$(curl -s -4 ifconfig.me || curl -s -4 icanhazip.com || curl -s -4 ipinfo.io/ip)
-SERVER_IP6=$(curl -s -6 ifconfig.me || curl -s -6 icanhazip.com || curl -s -6 ipinfo.io/ip 2>/dev/null)
-if [ -z "$SERVER_IP" ] && [ -z "$SERVER_IP6" ]; then
-    echo -e "${YELLOW}警告：无法获取公网 IP，请手动检查！${NC}"
-    SERVER_IP="YOUR_SERVER_IP"
-    SERVER_IP6="YOUR_SERVER_IP6"
+# 测试 UDP 端口监听
+echo -e "${YELLOW}正在测试 UDP 端口 $HY2_PORT 的连通性...${NC}"
+timeout 5 nc -u -l $HY2_PORT > /dev/null 2>&1 &
+sleep 1
+if netstat -uln | grep ":$HY2_PORT" > /dev/null; then
+    echo -e "${GREEN}UDP 端口 $HY2_PORT 可本地监听！${NC}"
+else
+    echo -e "${RED}错误：无法监听 UDP 端口 $HY2_PORT！${NC}"
 fi
 
-# 生成 Hysteria2 节点链接
-HY2_LINK_IP4="hysteria2://$HY2_PASSWORD@$SERVER_IP:$HY2_PORT/?insecure=1"
-HY2_LINK_IP6="hysteria2://$HY2_PASSWORD@[$SERVER_IP6]:$HY2_PORT/?insecure=1"
-echo -e "${YELLOW}节点链接已生成，请妥善保存！${NC}"
+# 获取公网 IP
+SERVER_IP=$(curl -s ifconfig.me || curl -s icanhazip.com || curl -s ipinfo.io/ip)
+[ -z "$SERVER_IP" ] && SERVER_IP="YOUR_SERVER_IP"
 
-# 输出节点信息
+# 输出节点链接
+HY2_LINK="hysteria2://$HY2_PASSWORD@$SERVER_IP:$HY2_PORT/?insecure=1"
 echo -e "\n${GREEN}Hysteria2 节点部署完成！${NC}"
-echo -e "服务器 IPv4: ${SERVER_IP:-未检测到}"
-echo -e "服务器 IPv6: ${SERVER_IP6:-未检测到}"
-echo -e "端口: $HY2_PORT"
-echo -e "密码: $HY2_PASSWORD"
-echo -e "IPv4 节点链接: $HY2_LINK_IP4"
-[ -n "$SERVER_IP6" ] && echo -e "IPv6 节点链接: $HY2_LINK_IP6"
-echo -e "\n${YELLOW}请保存节点链接以便客户端使用！${NC}"
+echo -e "服务器 IP: ${SERVER_IP}"
+echo -e "端口: ${HY2_PORT}"
+echo -e "密码: ${HY2_PASSWORD}"
+echo -e "节点链接: ${HY2_LINK}\n"
+echo -e "${YELLOW}请妥善保存节点链接以便客户端使用！${NC}"
 
 # 提示注意事项
 echo -e "${YELLOW}注意事项：${NC}"
-echo -e "1. 如果使用云服务器，请确保安全组允许 UDP 端口 $HY2_PORT（IPv4 和 IPv6）。"
-echo -e "2. 如果节点不通，测试 UDP 连通性："
-echo -e "   IPv4: nc -zv -u $SERVER_IP $HY2_PORT"
-[ -n "$SERVER_IP6" ] && echo -e "   IPv6: nc -zv -u $SERVER_IP6 $HY2_PORT"
-echo -e "3. 低内存环境（256MB）已优化，服务当前占用约 5-6MB。"
-if [ "$VIRT" = "lxc" ] || [ "$VIRT" = "openvz" ]; then
-    echo -e "4. 检测到 $VIRT 虚拟化，如果 UDP 不通，可能需宿主机运行："
-    echo -e "   lxc config set <容器名称> linux.kernel_modules udp_tunnel"
+echo -e "1. 云服务器需开放 UDP 端口 $HY2_PORT 的入站流量。"
+echo -e "2. 客户端可运行：nc -zv -u $SERVER_IP $HY2_PORT"
+echo -e "3. 确保客户端配置正确（IP、端口、密码、insecure=1）。"
+if [ "$STACK_TYPE" = "dual" ]; then
+    echo -e "4. 当前为双栈环境，监听地址：[::]，兼容 IPv4 + IPv6。"
 fi
