@@ -2,7 +2,7 @@
 
 # ======================================================
 #      Hysteria2 一体化工具脚本 (安装/卸载/检测)
-#      适配 Alpine / Debian / Ubuntu
+#      支持 Alpine(OpenRC) / Debian / Ubuntu(systemd)
 #      作者: ChatGPT (OpenAI)
 # ======================================================
 
@@ -43,8 +43,8 @@ install_hysteria() {
 
     # 固定版本下载 URL（v2.6.1）
     LATEST_URL="https://github.com/apernet/hysteria/releases/download/app/v2.6.1/hysteria-linux-amd64"
-    curl -Lo /usr/local/bin/hysteria "$LATEST_URL"
-    chmod +x /usr/local/bin/hysteria
+    curl -Lo "$BIN" "$LATEST_URL"
+    chmod +x "$BIN"
 
     # 生成配置文件
     mkdir -p /etc/hysteria
@@ -67,24 +67,53 @@ EOF
     openssl req -x509 -newkey rsa:2048 -keyout /etc/hysteria/self-cert.key \
         -out /etc/hysteria/self-cert.crt -days 3650 -nodes -subj "/CN=bing.com"
 
-    # 写入 systemd 服务
-    cat > "$SERVICE_FILE" <<EOF
+    # 根据服务管理器写服务脚本
+    if command -v systemctl >/dev/null 2>&1; then
+        echo -e "${YELLOW}检测到 systemd，配置 systemd 服务...${NC}"
+        cat > "$SERVICE_FILE" <<EOF
 [Unit]
 Description=Hysteria2 Server
 After=network.target
 
 [Service]
-ExecStart=/usr/local/bin/hysteria server -c /etc/hysteria/config.yaml
+ExecStart=$BIN server -c $CONFIG_FILE
 Restart=on-failure
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-    systemctl daemon-reexec
-    systemctl daemon-reload
-    systemctl enable hysteria
-    systemctl restart hysteria
+        systemctl daemon-reexec
+        systemctl daemon-reload
+        systemctl enable hysteria
+        systemctl restart hysteria
+
+    elif command -v rc-service >/dev/null 2>&1; then
+        echo -e "${YELLOW}检测到 OpenRC，配置 OpenRC 服务...${NC}"
+        RC_SCRIPT="/etc/init.d/hysteria"
+        cat > "$RC_SCRIPT" <<EOF
+#!/sbin/openrc-run
+
+command=$BIN
+command_args="server -c $CONFIG_FILE"
+pidfile=/run/hysteria.pid
+
+depend() {
+    need net
+}
+
+start_pre() {
+    checkpath --directory --mode 0755 /run
+}
+EOF
+        chmod +x "$RC_SCRIPT"
+        rc-update add hysteria default
+        rc-service hysteria restart
+
+    else
+        echo -e "${RED}无法检测到 systemd 或 OpenRC，无法配置服务${NC}"
+        exit 1
+    fi
 
     # 开放防火墙端口（避免重复插入）
     if ! iptables -C INPUT -p udp --dport $PORT -j ACCEPT 2>/dev/null; then
@@ -99,38 +128,68 @@ EOF
 # === 卸载 Hysteria2 ===
 uninstall_hysteria() {
     echo -e "${YELLOW}卸载 Hysteria2...${NC}"
-    systemctl stop hysteria || true
-    systemctl disable hysteria || true
-    rm -f "$SERVICE_FILE"
+
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl stop hysteria || true
+        systemctl disable hysteria || true
+        rm -f "$SERVICE_FILE"
+        systemctl daemon-reload
+    elif command -v rc-service >/dev/null 2>&1; then
+        rc-service hysteria stop || true
+        rc-update del hysteria default || true
+        rm -f /etc/init.d/hysteria
+    else
+        echo -e "${RED}未检测到 systemd 或 OpenRC，无法卸载服务${NC}"
+    fi
+
     rm -f "$BIN"
     rm -rf /etc/hysteria
-    systemctl daemon-reload
+
     echo -e "${GREEN}Hysteria2 已卸载${NC}"
 }
 
 # === 检查 Hysteria2 状态 ===
 check_hysteria() {
     echo -e "${YELLOW}① 检查服务状态...${NC}"
-    systemctl is-active --quiet hysteria && \
-        echo -e "${GREEN}Hysteria2 正在运行${NC}" || \
-        echo -e "${RED}Hysteria2 未运行${NC}"
+
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl is-active --quiet hysteria && \
+            echo -e "${GREEN}Hysteria2 正在运行${NC}" || \
+            echo -e "${RED}Hysteria2 未运行${NC}"
+    elif command -v rc-service >/dev/null 2>&1; then
+        rc-service hysteria status >/dev/null 2>&1 && \
+            echo -e "${GREEN}Hysteria2 正在运行${NC}" || \
+            echo -e "${RED}Hysteria2 未运行${NC}"
+    else
+        echo -e "${RED}未检测到 systemd 或 OpenRC，无法检查服务状态${NC}"
+    fi
 
     echo -e "${YELLOW}② 检查端口监听...${NC}"
     PORT=$(grep -Po '(?<=listen: 0.0.0.0:)\d+' "$CONFIG_FILE" 2>/dev/null)
-    [ -n "$PORT" ] && ss -uln | grep -q ":$PORT" && \
-        echo -e "${GREEN}UDP 端口 $PORT 正在监听${NC}" || \
-        echo -e "${RED}未监听端口 $PORT${NC}"
+    if [ -n "$PORT" ]; then
+        if ss -uln | grep -q ":$PORT"; then
+            echo -e "${GREEN}UDP 端口 $PORT 正在监听${NC}"
+        else
+            echo -e "${RED}未监听端口 $PORT${NC}"
+        fi
+    else
+        echo -e "${RED}未找到配置端口${NC}"
+    fi
 
     echo -e "${YELLOW}③ 防火墙状态...${NC}"
-    iptables -L INPUT -n | grep -q "udp dpt:$PORT" && \
-        echo -e "${GREEN}iptables 已放行 UDP $PORT${NC}" || \
+    if iptables -L INPUT -n | grep -q "udp dpt:$PORT"; then
+        echo -e "${GREEN}iptables 已放行 UDP $PORT${NC}"
+    else
         echo -e "${RED}iptables 未放行此端口${NC}"
+    fi
 
     echo -e "${YELLOW}④ 公网 IP: ${NC}$(curl -s https://api64.ipify.org)"
 
     PASSWORD=$(grep -Po '(?<=password: ).*' "$CONFIG_FILE" 2>/dev/null)
-    echo -e "${YELLOW}⑤ 节点链接：${NC}"
-    echo -e "${GREEN}hysteria2://$PASSWORD@$(curl -s https://api64.ipify.org):$PORT/?insecure=1${NC}"
+    if [ -n "$PASSWORD" ] && [ -n "$PORT" ]; then
+        echo -e "${YELLOW}⑤ 节点链接：${NC}"
+        echo -e "${GREEN}hysteria2://$PASSWORD@$(curl -s https://api64.ipify.org):$PORT/?insecure=1${NC}"
+    fi
 }
 
 # === 菜单 ===
