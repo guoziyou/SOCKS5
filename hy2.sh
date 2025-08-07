@@ -41,8 +41,8 @@ install_hysteria() {
         exit 1
     fi
 
-    # 下载最新 Hysteria2 二进制
-    LATEST_URL=$(curl -s https://api.github.com/repos/apernet/hysteria/releases/latest | grep browser_download_url | grep linux-amd64 | grep -v .sig | cut -d '"' -f 4)
+    # 固定版本下载 URL（v2.6.1）
+    LATEST_URL="https://github.com/apernet/hysteria/releases/download/app/v2.6.1/hysteria-linux-amd64"
     curl -Lo /usr/local/bin/hysteria "$LATEST_URL"
     chmod +x /usr/local/bin/hysteria
 
@@ -86,7 +86,10 @@ EOF
     systemctl enable hysteria
     systemctl restart hysteria
 
-    iptables -I INPUT -p udp --dport $PORT -j ACCEPT
+    # 开放防火墙端口（避免重复插入）
+    if ! iptables -C INPUT -p udp --dport $PORT -j ACCEPT 2>/dev/null; then
+        iptables -I INPUT -p udp --dport $PORT -j ACCEPT
+    fi
 
     echo -e "\n${GREEN}Hysteria2 安装完成！${NC}"
     echo -e "${YELLOW}连接信息：${NC}"
