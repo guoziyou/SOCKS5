@@ -170,3 +170,63 @@ view_connections() {
 
     echo "正在监听端口: $PORT"
     echo "-------------------------------------"
+    echo "  客户端 (Peer)                  代理 (Local)"
+    
+    # 使用 ss 命令查找已建立的 (ESTABLISHED) TCP (-t) 连接
+    # -n: 以数字形式显示IP和端口
+    # 'dport = :$PORT': 过滤目标端口为 $PORT 的连接
+    local connections
+    connections=$(ss -tn state established "dport = :$PORT")
+    
+    if [ -z "$connections" ]; then
+        echo "（当前没有活动连接）"
+    else
+        echo "$connections"
+    fi
+    echo "-------------------------------------"
+}
+
+# --- 主菜单 ---
+main_menu() {
+    clear
+    echo "SOCKS5 (Dante) 代理管理脚本"
+    echo "=========================="
+    echo ""
+    echo "请选择一个操作:"
+    echo "  1. 安装 SOCKS5 代理"
+    echo "  2. 卸载 SOCKS5 代理"
+    echo "  3. 查看当前连接"
+    echo "  4. 退出"
+    echo ""
+    read -p "请输入选项 [1-4]: " choice
+
+    case $choice in
+        1)
+            install_socks5
+            read -p "按 Enter 键返回菜单..."
+            main_menu
+            ;;
+        2)
+            uninstall_socks5
+            read -p "按 Enter 键返回菜单..."
+            main_menu
+            ;;
+        3)
+            view_connections
+            read -p "按 Enter 键返回菜单..."
+            main_menu
+            ;;
+        4)
+            echo "退出。"
+            exit 0
+            ;;
+        *)
+            echo "无效选项，请重新输入。"
+            sleep 2
+            main_menu
+            ;;
+    esac
+}
+
+# 运行主菜单
+main_menu
