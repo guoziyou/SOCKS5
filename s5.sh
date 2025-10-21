@@ -150,37 +150,23 @@ uninstall_socks5() {
     echo "✅ SOCKS5 卸载完成。"
 }
 
-# --- 主菜单 ---
-main_menu() {
-    clear
-    echo "SOCKS5 (Dante) 代理管理脚本"
-    echo "=========================="
-    echo ""
-    echo "请选择一个操作:"
-    echo "  1. 安装 SOCKS5 代理"
-    echo "  2. 卸载 SOCKS5 代理"
-    echo "  3. 退出"
-    echo ""
-    read -p "请输入选项 [1-3]: " choice
+# --- 查看当前连接 功能 ---
+view_connections() {
+    echo "--- 正在查询 SOCKS5 实时连接 ---"
+    
+    if [ ! -f "$INFO_FILE" ]; then
+        echo "错误：未找到配置文件 $INFO_FILE。"
+        echo "请先安装 SOCKS5 代理。"
+        echo "-------------------------------------"
+        return
+    fi
 
-    case $choice in
-        1)
-            install_socks5
-            ;;
-        2)
-            uninstall_socks5
-            ;;
-        3)
-            echo "退出。"
-            exit 0
-            ;;
-        *)
-            echo "无效选项，请重新输入。"
-            sleep 2
-            main_menu
-            ;;
-    esac
-}
+    source $INFO_FILE
+    if [ -z "$PORT" ]; then
+        echo "错误：无法从 $INFO_FILE 读取端口号。"
+        echo "-------------------------------------"
+        return
+    fi
 
-# 运行主菜单
-main_menu
+    echo "正在监听端口: $PORT"
+    echo "-------------------------------------"
