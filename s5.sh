@@ -9,6 +9,83 @@ fi
 # 定义保存配置信息的文件
 INFO_FILE="/root/danted_info.txt"
 
+# --- URL 编码功能 ---
+# 用于处理密码中的特殊字符, 如 + / =
+url_encode() {
+    local string="$1"
+    local encoded=""
+    local char
+    for (( i=0; i<${#string}; i++ )); do
+        char=${string:$i:1}
+        case "$char" in
+            [a-zA-Z0-9.~_-]) encoded+="$char" ;;
+            *) encoded+=$(printf '%%%02X' "'$char") ;;
+        esac
+    done
+    echo "$encoded"
+}
+
+# --- 显示 SOCKS5 节点链接 功能 ---
+show_links() {
+    echo "--- 正在生成 SOCKS5 节点链接 ---"
+
+    if [ ! -f "$INFO_FILE" ]; then
+        echo "错误：未找到配置文件 $INFO_FILE。"
+        echo "请先安装 SOCKS5 代理 (选项 1)。"
+        echo "-------------------------------------"
+        return
+    fi
+
+    # 1. 加载配置
+    source $INFO_FILE
+    if [ -z "$PORT" ] || [ -z "$USERNAME" ] || [ -z "$PASSWORD" ]; then
+        echo "错误：配置文件 $INFO_FILE 不完整。"
+        echo "请尝试重新安装 SOCKS5 代理。"
+        echo "-------------------------------------"
+        return
+    fi
+
+    # 2. 获取 IP
+    local IPV4
+    local IPV6
+    IPV4=$(curl -s https://ipv4.icanhazip.com)
+    IPV6=$(curl -s https://ipv6.icanhazip.com)
+
+    if [ -z "$IPV4" ] && [ -z "$IPV6" ]; then
+        echo "错误：无法获取服务器的公共 IP 地址。"
+        echo "-------------------------------------"
+        return
+    fi
+
+    # 3. URL 编码密码
+    local ENCODED_PASSWORD
+    ENCODED_PASSWORD=$(url_encode "$PASSWORD")
+
+    echo "您可以复制以下链接并导入到您的代理客户端中："
+    echo "-------------------------------------"
+
+    if [ -n "$IPV4" ]; then
+        echo "🔗 IPv4 链接 (推荐):"
+        echo "socks5://${USERNAME}:${ENCODED_PASSWORD}@${IPV4}:${PORT}"
+        echo ""
+    fi
+    
+    if [ -n "$IPV6" ]; then
+        echo "🔗 IPv6 链接 (如果您的本地网络支持):"
+        # 注意: IPv6 地址在 URL 中必须用 [] 括起来
+        echo "socks5://${USERNAME}:${ENCODED_PASSWORD}@[${IPV6}]:${PORT}"
+        echo ""
+    fi
+    
+    echo "--- 原始连接信息 ---"
+    echo "  服务器 (IP): $IPV4 (或 $IPV6)"
+    echo "  端口 (Port): $PORT"
+    echo "  用户名 (User): $USERNAME"
+    echo "  密码 (Pass): $PASSWORD"
+    echo "-------------------------------------"
+}
+
+
 # --- 安装 SOCKS5 功能 ---
 install_socks5() {
     echo "--- 正在安装 SOCKS5 代理 ---"
@@ -85,23 +162,17 @@ EOF
     iptables -I INPUT -p tcp --dport $PORT -j ACCEPT
     ip6tables -I INPUT -p tcp --dport $PORT -j ACCEPT
 
-    # 8. 保存信息以备卸载
-    echo "正在保存端口和用户名信息到 $INFO_FILE..."
+    # 8. 保存信息以备卸载 (包含密码)
+    echo "正在保存配置信息到 $INFO_FILE..."
     echo "PORT=$PORT" > $INFO_FILE
     echo "USERNAME=$USERNAME" >> $INFO_FILE
+    echo "PASSWORD=$PASSWORD" >> $INFO_FILE # 新增
     chmod 600 $INFO_FILE
 
-    # 9. 显示信息
+    # 9. 显示信息 (自动调用 show_links)
     echo ""
     echo "✅ SOCKS5 代理安装完成"
-    echo "-------------------------------------"
-    echo "📌 IPv4: $(curl -s https://ipv4.icanhazip.com)"
-    echo "📌 IPv6: $(curl -s https://ipv6.icanhazip.com)"
-    echo "📌 端口: $PORT"
-    echo "👤 用户名: $USERNAME"
-    echo "🔑 密码: $PASSWORD"
-    echo "-------------------------------------"
-    echo "配置信息已保存，请妥善保管您的密码。"
+    show_links # 自动显示节点链接
 }
 
 # --- 卸载 SOCKS5 功能 ---
@@ -150,42 +221,6 @@ uninstall_socks5() {
     echo "✅ SOCKS5 卸载完成。"
 }
 
-# --- 查看当前连接 功能 ---
-view_connections() {
-    echo "--- 正在查询 SOCKS5 实时连接 ---"
-    
-    if [ ! -f "$INFO_FILE" ]; then
-        echo "错误：未找到配置文件 $INFO_FILE。"
-        echo "请先安装 SOCKS5 代理。"
-        echo "-------------------------------------"
-        return
-    fi
-
-    source $INFO_FILE
-    if [ -z "$PORT" ]; then
-        echo "错误：无法从 $INFO_FILE 读取端口号。"
-        echo "-------------------------------------"
-        return
-    fi
-
-    echo "正在监听端口: $PORT"
-    echo "-------------------------------------"
-    echo "  客户端 (Peer)                  代理 (Local)"
-    
-    # 使用 ss 命令查找已建立的 (ESTABLISHED) TCP (-t) 连接
-    # -n: 以数字形式显示IP和端口
-    # 'dport = :$PORT': 过滤目标端口为 $PORT 的连接
-    local connections
-    connections=$(ss -tn state established "dport = :$PORT")
-    
-    if [ -z "$connections" ]; then
-        echo "（当前没有活动连接）"
-    else
-        echo "$connections"
-    fi
-    echo "-------------------------------------"
-}
-
 # --- 主菜单 ---
 main_menu() {
     clear
@@ -195,7 +230,7 @@ main_menu() {
     echo "请选择一个操作:"
     echo "  1. 安装 SOCKS5 代理"
     echo "  2. 卸载 SOCKS5 代理"
-    echo "  3. 查看当前连接"
+    echo "  3. 显示 SOCKS5 节点链接"
     echo "  4. 退出"
     echo ""
     read -p "请输入选项 [1-4]: " choice
@@ -212,7 +247,7 @@ main_menu() {
             main_menu
             ;;
         3)
-            view_connections
+            show_links
             read -p "按 Enter 键返回菜单..."
             main_menu
             ;;
