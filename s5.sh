@@ -1,22 +1,48 @@
 #!/bin/bash
 
-# 设置用户名和密码
-USERNAME="socks6user"
-PASSWORD="pass6word"
+# 检查是否为 root 用户
+if [ "$(id -u)" -ne 0 ]; then
+   echo "错误：此脚本必须以 root 权限运行。"
+   exit 1
+fi
 
-# 安装 dante-server
-apt update
-apt install dante-server -y
+# 定义保存配置信息的文件
+INFO_FILE="/root/danted_info.txt"
 
-# 检查网卡名（取第一个非 lo 网卡）
-IFACE=$(ip -o -6 addr show scope global | awk '{print $2}' | head -n1)
-IFACE=${IFACE:-eth0}
+# --- 安装 SOCKS5 功能 ---
+install_socks5() {
+    echo "--- 正在安装 SOCKS5 代理 ---"
 
-# 写入配置文件
+    # 1. 生成随机凭据和端口
+    echo "正在生成随机用户名和密码..."
+    USERNAME="user$(openssl rand -hex 4)"
+    PASSWORD=$(openssl rand -base64 12)
+
+    echo "正在查找 40000 以上未被占用的随机端口..."
+    while true; do
+        PORT=$((RANDOM % 25535 + 40000))
+        if ! ss -lntu | grep -q ":${PORT}\b"; then
+            echo "找到可用端口: $PORT"
+            break
+        fi
+    done
+
+    # 2. 安装 dante-server 及依赖
+    echo "正在更新软件包列表并安装 dante-server, curl, openssl..."
+    apt update
+    apt install dante-server curl openssl -y
+
+    # 3. 检查网卡名
+    IFACE=$(ip -o -6 addr show scope global | awk '{print $2}' | head -n1)
+    IFACE=${IFACE:-eth0}
+    echo "将使用 $IFACE 作为外部接口..."
+
+    # 4. 写入配置文件
+    echo "正在写入配置文件 /etc/danted.conf..."
 cat > /etc/danted.conf <<EOF
 logoutput: /var/log/danted.log
-internal: 0.0.0.0 port = 1080
-internal: :: port = 1080
+internal: 0.0.0.0 port = $PORT
+internal: :: port = $PORT
 external: $IFACE
 method: username
 user.notprivileged: nobody
@@ -44,22 +70,117 @@ pass {
 }
 EOF
 
-# 添加 socks5 用户
-useradd --no-create-home --shell /usr/sbin/nologin $USERNAME
-echo "$USERNAME:$PASSWORD" | chpasswd
+    # 5. 添加 SOCKS5 用户
+    echo "正在创建用户 $USERNAME..."
+    useradd --no-create-home --shell /usr/sbin/nologin $USERNAME
+    echo "$USERNAME:$PASSWORD" | chpasswd
 
-# 启动 danted 服务
-systemctl enable danted
-systemctl restart danted
+    # 6. 启动 danted 服务
+    echo "正在启动并启用 danted 服务..."
+    systemctl enable danted
+    systemctl restart danted
 
-# 开放端口（IPv4 & IPv6）
-iptables -I INPUT -p tcp --dport 1080 -j ACCEPT
-ip6tables -I INPUT -p tcp --dport 1080 -j ACCEPT
+    # 7. 开放防火墙端口
+    echo "正在开放端口 $PORT (IPv4 & IPv6)..."
+    iptables -I INPUT -p tcp --dport $PORT -j ACCEPT
+    ip6tables -I INPUT -p tcp --dport $PORT -j ACCEPT
 
-# 显示信息
-echo "✅ SOCKS5 代理安装完成"
-echo "📌 IPv4: $(curl -s https://ipv4.icanhazip.com)"
-echo "📌 IPv6: $(curl -s https://ipv6.icanhazip.com)"
-echo "📌 端口: 1080"
-echo "👤 用户名: $USERNAME"
-echo "🔑 密码: $PASSWORD"
+    # 8. 保存信息以备卸载
+    echo "正在保存端口和用户名信息到 $INFO_FILE..."
+    echo "PORT=$PORT" > $INFO_FILE
+    echo "USERNAME=$USERNAME" >> $INFO_FILE
+    chmod 600 $INFO_FILE
+
+    # 9. 显示信息
+    echo ""
+    echo "✅ SOCKS5 代理安装完成"
+    echo "-------------------------------------"
+    echo "📌 IPv4: $(curl -s https://ipv4.icanhazip.com)"
+    echo "📌 IPv6: $(curl -s https://ipv6.icanhazip.com)"
+    echo "📌 端口: $PORT"
+    echo "👤 用户名: $USERNAME"
+    echo "🔑 密码: $PASSWORD"
+    echo "-------------------------------------"
+    echo "配置信息已保存，请妥善保管您的密码。"
+}
+
+# --- 卸载 SOCKS5 功能 ---
+uninstall_socks5() {
+    echo "--- 正在卸载 SOCKS5 代理 ---"
+
+    # 1. 停止和禁用服务
+    echo "正在停止和禁用 danted 服务..."
+    systemctl stop danted
+    systemctl disable danted
+
+    # 2. 读取保存的配置
+    if [ -f "$INFO_FILE" ]; then
+        source $INFO_FILE
+        echo "已从 $INFO_FILE 加载配置信息。"
+    else
+        echo "警告：未找到 $INFO_FILE 文件。"
+        echo "无法自动删除防火墙规则和用户，请手动操作。"
+        PORT=""
+        USERNAME=""
+    fi
+
+    # 3. 删除防火墙规则
+    if [ -n "$PORT" ]; then
+        echo "正在删除端口 $PORT 的防火墙规则..."
+        iptables -D INPUT -p tcp --dport $PORT -j ACCEPT
+        ip6tables -D INPUT -p tcp --dport $PORT -j ACCEPT
+    fi
+
+    # 4. 卸载软件包
+    echo "正在彻底卸载 dante-server..."
+    apt remove --purge dante-server -y
+    apt autoremove -y
+
+    # 5. 删除用户
+    if [ -n "$USERNAME" ]; then
+        echo "正在删除用户 $USERNAME..."
+        userdel $USERNAME
+    fi
+
+    # 6. 清理残留文件
+    echo "正在清理残留文件..."
+    rm -f /var/log/danted.log
+    rm -f $INFO_FILE
+
+    echo "✅ SOCKS5 卸载完成。"
+}
+
+# --- 主菜单 ---
+main_menu() {
+    clear
+    echo "SOCKS5 (Dante) 代理管理脚本"
+    echo "=========================="
+    echo ""
+    echo "请选择一个操作:"
+    echo "  1. 安装 SOCKS5 代理"
+    echo "  2. 卸载 SOCKS5 代理"
+    echo "  3. 退出"
+    echo ""
+    read -p "请输入选项 [1-3]: " choice
+
+    case $choice in
+        1)
+            install_socks5
+            ;;
+        2)
+            uninstall_socks5
+            ;;
+        3)
+            echo "退出。"
+            exit 0
+            ;;
+        *)
+            echo "无效选项，请重新输入。"
+            sleep 2
+            main_menu
+            ;;
+    esac
+}
+
+# 运行主菜单
+main_menu
