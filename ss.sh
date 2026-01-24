@@ -1,4 +1,3 @@
-cat > ss.sh << 'EOF'
 #!/bin/bash
 
 # 颜色定义
@@ -120,7 +119,6 @@ echo -e "${YELLOW}请保存节点链接以便客户端使用！${NC}"
 
 # 提示防火墙设置
 echo -e "${YELLOW}提示：请确保防火墙允许端口 $SS_PORT (如使用 ufw：ufw allow $SS_PORT)${NC}"
-EOF
 
 # 赋予权限并运行
 chmod +x ss.sh
