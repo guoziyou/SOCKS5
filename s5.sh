@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==========================================
-# SOCKS5 一键安装脚本 (GOST版 - 解决依赖问题)
+# SOCKS5 一键安装脚本 (GOST版 - 修复IP获取)
 # ==========================================
 
 # 颜色定义
@@ -35,6 +35,29 @@ url_encode() {
     echo "$encoded"
 }
 
+# --- 获取公网IP (增强版) ---
+get_public_ip() {
+    local version=$1
+    local ip=""
+    
+    # 尝试源 1: icanhazip (最稳定)
+    if [ "$version" == "4" ]; then
+        ip=$(curl -s4 -m 5 --user-agent "Mozilla/5.0" https://ipv4.icanhazip.com)
+        # 如果失败或返回了html错误，尝试源 2: ipify
+        if [ -z "$ip" ] || [[ "$ip" == *"html"* ]] || [[ "$ip" == *"DOCTYPE"* ]]; then
+            ip=$(curl -s4 -m 5 --user-agent "Mozilla/5.0" https://api.ipify.org)
+        fi
+    elif [ "$version" == "6" ]; then
+        ip=$(curl -s6 -m 5 --user-agent "Mozilla/5.0" https://ipv6.icanhazip.com)
+        if [ -z "$ip" ] || [[ "$ip" == *"html"* ]] || [[ "$ip" == *"DOCTYPE"* ]]; then
+            ip=$(curl -s6 -m 5 --user-agent "Mozilla/5.0" https://api64.ipify.org)
+        fi
+    fi
+
+    # 清理可能存在的空格
+    echo $ip | tr -d '[:space:]'
+}
+
 # --- 显示连接信息 ---
 show_links() {
     if [ ! -f "$INFO_FILE" ]; then
@@ -43,23 +66,30 @@ show_links() {
     fi
     source $INFO_FILE
     
-    # 获取IP
-    IPV4=$(curl -s4 https://ip.sb || curl -s4 ifconfig.me)
-    IPV6=$(curl -s6 https://ip.sb || curl -s6 ifconfig.me)
+    echo -e "${YELLOW}正在获取服务器 IP...${NC}"
+    IPV4=$(get_public_ip 4)
+    IPV6=$(get_public_ip 6)
     
     ENCODED_PASS=$(url_encode "$PASSWORD")
     
     echo -e "\n${GREEN}=== SOCKS5 节点信息 ===${NC}"
     echo -e "状态: $(systemctl is-active gost 2>/dev/null || echo '未运行')"
     echo -e "-------------------------------------"
-    if [ -n "$IPV4" ]; then
+    
+    if [ -n "$IPV4" ] && [[ "$IPV4" != *"html"* ]]; then
         echo -e "${YELLOW}IPv4 链接:${NC}"
         echo "socks5://${USERNAME}:${ENCODED_PASS}@${IPV4}:${PORT}"
+    else
+        echo -e "${RED}警告: 无法获取有效 IPv4 地址 (可能无IPv4网络)${NC}"
     fi
-    if [ -n "$IPV6" ]; then
+    
+    echo ""
+
+    if [ -n "$IPV6" ] && [[ "$IPV6" != *"html"* ]]; then
         echo -e "${YELLOW}IPv6 链接:${NC}"
         echo "socks5://${USERNAME}:${ENCODED_PASS}@[${IPV6}]:${PORT}"
     fi
+    
     echo -e "-------------------------------------"
     echo -e "端口: $PORT"
     echo -e "用户: $USERNAME"
@@ -79,6 +109,8 @@ install_socks5() {
     echo -e "${YELLOW}正在下载 GOST 主程序...${NC}"
     ARCH=$(uname -m)
     GOST_VER="2.11.5"
+    URL=""
+    
     if [[ "$ARCH" == "x86_64" ]]; then
         URL="https://github.com/ginuerzh/gost/releases/download/v${GOST_VER}/gost-linux-amd64-${GOST_VER}.gz"
     elif [[ "$ARCH" == "aarch64" ]]; then
@@ -174,7 +206,7 @@ main_menu() {
     echo "=========================="
     echo "1. 安装 SOCKS5"
     echo "2. 卸载 SOCKS5"
-    echo "3. 查看链接"
+    echo "3. 查看链接 (修复IP显示)"
     echo "4. 退出"
     echo ""
     read -p "选择: " choice
