@@ -1,3 +1,4 @@
+cat > ss.sh << 'EOF'
 #!/bin/bash
 
 # 颜色定义
@@ -33,14 +34,15 @@ while true; do
     fi
 done
 
-# 更新系统并安装依赖
+# 更新系统并安装依赖 (已修复：移除了 simple-obfs)
 echo -e "${YELLOW}正在更新系统并安装依赖...${NC}"
 apt-get update -y
-apt-get install -y shadowsocks-libev simple-obfs curl
+apt-get install -y shadowsocks-libev curl
 
 # 检查Shadowsocks是否安装成功
 if ! command -v ss-server &> /dev/null; then
     echo -e "${RED}错误：Shadowsocks-libev 安装失败！${NC}"
+    echo -e "${YELLOW}建议：您的系统可能过新，软件源中已不再包含旧版 SS，建议改用 Docker 安装方式。${NC}"
     exit 1
 fi
 
@@ -118,3 +120,8 @@ echo -e "${YELLOW}请保存节点链接以便客户端使用！${NC}"
 
 # 提示防火墙设置
 echo -e "${YELLOW}提示：请确保防火墙允许端口 $SS_PORT (如使用 ufw：ufw allow $SS_PORT)${NC}"
+EOF
+
+# 赋予权限并运行
+chmod +x ss.sh
+./ss.sh
