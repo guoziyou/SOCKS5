@@ -1,16 +1,26 @@
 #!/bin/bash
 
+# ==========================================
+# SOCKS5 一键安装脚本 (GOST版 - 解决依赖问题)
+# ==========================================
+
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
 # 检查是否为 root 用户
 if [ "$(id -u)" -ne 0 ]; then
-   echo "错误：此脚本必须以 root 权限运行。"
+   echo -e "${RED}错误：此脚本必须以 root 权限运行。${NC}"
    exit 1
 fi
 
-# 定义保存配置信息的文件
-INFO_FILE="/root/danted_info.txt"
+INFO_FILE="/root/gost_socks5_info.txt"
+SERVICE_FILE="/etc/systemd/system/gost.service"
+BIN_PATH="/usr/local/bin/gost"
 
-# --- URL 编码功能 ---
-# 用于处理密码中的特殊字符, 如 + / =
+# --- URL 编码 ---
 url_encode() {
     local string="$1"
     local encoded=""
@@ -25,243 +35,156 @@ url_encode() {
     echo "$encoded"
 }
 
-# --- 显示 SOCKS5 节点链接 功能 ---
+# --- 显示连接信息 ---
 show_links() {
-    echo "--- 正在生成 SOCKS5 节点链接 ---"
-
     if [ ! -f "$INFO_FILE" ]; then
-        echo "错误：未找到配置文件 $INFO_FILE。"
-        echo "请先安装 SOCKS5 代理 (选项 1)。"
-        echo "-------------------------------------"
+        echo -e "${RED}错误：未找到配置文件，请先安装。${NC}"
         return
     fi
-
-    # 1. 加载配置
     source $INFO_FILE
-    if [ -z "$PORT" ] || [ -z "$USERNAME" ] || [ -z "$PASSWORD" ]; then
-        echo "错误：配置文件 $INFO_FILE 不完整。"
-        echo "请尝试重新安装 SOCKS5 代理。"
-        echo "-------------------------------------"
-        return
-    fi
-
-    # 2. 获取 IP
-    local IPV4
-    local IPV6
-    IPV4=$(curl -s https://ipv4.icanhazip.com)
-    IPV6=$(curl -s https://ipv6.icanhazip.com)
-
-    if [ -z "$IPV4" ] && [ -z "$IPV6" ]; then
-        echo "错误：无法获取服务器的公共 IP 地址。"
-        echo "-------------------------------------"
-        return
-    fi
-
-    # 3. URL 编码密码
-    local ENCODED_PASSWORD
-    ENCODED_PASSWORD=$(url_encode "$PASSWORD")
-
-    echo "您可以复制以下链接并导入到您的代理客户端中："
-    echo "-------------------------------------"
-
+    
+    # 获取IP
+    IPV4=$(curl -s4 https://ip.sb || curl -s4 ifconfig.me)
+    IPV6=$(curl -s6 https://ip.sb || curl -s6 ifconfig.me)
+    
+    ENCODED_PASS=$(url_encode "$PASSWORD")
+    
+    echo -e "\n${GREEN}=== SOCKS5 节点信息 ===${NC}"
+    echo -e "状态: $(systemctl is-active gost 2>/dev/null || echo '未运行')"
+    echo -e "-------------------------------------"
     if [ -n "$IPV4" ]; then
-        echo "🔗 IPv4 链接 (推荐):"
-        echo "socks5://${USERNAME}:${ENCODED_PASSWORD}@${IPV4}:${PORT}"
-        echo ""
+        echo -e "${YELLOW}IPv4 链接:${NC}"
+        echo "socks5://${USERNAME}:${ENCODED_PASS}@${IPV4}:${PORT}"
     fi
-    
     if [ -n "$IPV6" ]; then
-        echo "🔗 IPv6 链接 (如果您的本地网络支持):"
-        # 注意: IPv6 地址在 URL 中必须用 [] 括起来
-        echo "socks5://${USERNAME}:${ENCODED_PASSWORD}@[${IPV6}]:${PORT}"
-        echo ""
+        echo -e "${YELLOW}IPv6 链接:${NC}"
+        echo "socks5://${USERNAME}:${ENCODED_PASS}@[${IPV6}]:${PORT}"
     fi
-    
-    echo "--- 原始连接信息 ---"
-    echo "  服务器 (IP): $IPV4 (或 $IPV6)"
-    echo "  端口 (Port): $PORT"
-    echo "  用户名 (User): $USERNAME"
-    echo "  密码 (Pass): $PASSWORD"
-    echo "-------------------------------------"
+    echo -e "-------------------------------------"
+    echo -e "端口: $PORT"
+    echo -e "用户: $USERNAME"
+    echo -e "密码: $PASSWORD"
+    echo -e "-------------------------------------"
 }
 
-
-# --- 安装 SOCKS5 功能 ---
+# --- 安装 GOST ---
 install_socks5() {
-    echo "--- 正在安装 SOCKS5 代理 ---"
+    echo -e "${YELLOW}--- 开始安装 SOCKS5 (GOST) ---${NC}"
 
-    # 1. 生成随机凭据和端口
-    echo "正在生成随机用户名和密码..."
-    USERNAME="user$(openssl rand -hex 4)"
-    PASSWORD=$(openssl rand -base64 12)
+    # 1. 环境准备
+    apt-get update
+    apt-get install -y wget curl gzip
 
-    echo "正在查找 40000 以上未被占用的随机端口..."
+    # 2. 下载 GOST 二进制文件 (不依赖 apt 源)
+    echo -e "${YELLOW}正在下载 GOST 主程序...${NC}"
+    ARCH=$(uname -m)
+    GOST_VER="2.11.5"
+    if [[ "$ARCH" == "x86_64" ]]; then
+        URL="https://github.com/ginuerzh/gost/releases/download/v${GOST_VER}/gost-linux-amd64-${GOST_VER}.gz"
+    elif [[ "$ARCH" == "aarch64" ]]; then
+        URL="https://github.com/ginuerzh/gost/releases/download/v${GOST_VER}/gost-linux-arm64-${GOST_VER}.gz"
+    else
+        echo -e "${RED}不支持的架构: $ARCH${NC}"
+        exit 1
+    fi
+
+    wget -qO gost.gz "$URL"
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}下载失败，请检查网络连接！${NC}"
+        exit 1
+    fi
+
+    gzip -d -f gost.gz
+    mv gost $BIN_PATH
+    chmod +x $BIN_PATH
+    
+    if ! command -v $BIN_PATH &> /dev/null; then
+        echo -e "${RED}安装失败：二进制文件无法执行。${NC}"
+        exit 1
+    fi
+
+    # 3. 配置参数
+    USERNAME="user$(openssl rand -hex 3)"
+    PASSWORD=$(openssl rand -base64 10)
+    
     while true; do
-        PORT=$((RANDOM % 25535 + 40000))
+        PORT=$((RANDOM % 20000 + 30000))
         if ! ss -lntu | grep -q ":${PORT}\b"; then
-            echo "找到可用端口: $PORT"
             break
         fi
     done
 
-    # 2. 安装 dante-server 及依赖
-    echo "正在更新软件包列表并安装 dante-server, curl, openssl..."
-    apt update
-    apt install dante-server curl openssl -y
+    # 4. 创建服务
+    echo -e "${YELLOW}正在配置系统服务...${NC}"
+cat > $SERVICE_FILE <<EOF
+[Unit]
+Description=GOST SOCKS5 Server
+After=network.target
 
-    # 3. 检查网卡名
-    IFACE=$(ip -o -6 addr show scope global | awk '{print $2}' | head -n1)
-    IFACE=${IFACE:-eth0}
-    echo "将使用 $IFACE 作为外部接口..."
+[Service]
+Type=simple
+ExecStart=$BIN_PATH -L "$USERNAME:$PASSWORD@:$PORT"
+Restart=always
+User=root
 
-    # 4. 写入配置文件
-    echo "正在写入配置文件 /etc/danted.conf..."
-cat > /etc/danted.conf <<EOF
-logoutput: /var/log/danted.log
-internal: 0.0.0.0 port = $PORT
-internal: :: port = $PORT
-external: $IFACE
-method: username
-user.notprivileged: nobody
-
-client pass {
-    from: 0.0.0.0/0 to: 0.0.0.0/0
-    log: connect disconnect error
-}
-client pass {
-    from: ::/0 to: ::/0
-    log: connect disconnect error
-}
-
-pass {
-    from: 0.0.0.0/0 to: 0.0.0.0/0
-    protocol: tcp udp
-    log: connect disconnect error
-    method: username
-}
-pass {
-    from: ::/0 to: ::/0
-    protocol: tcp udp
-    log: connect disconnect error
-    method: username
-}
+[Install]
+WantedBy=multi-user.target
 EOF
 
-    # 5. 添加 SOCKS5 用户
-    echo "正在创建用户 $USERNAME..."
-    useradd --no-create-home --shell /usr/sbin/nologin $USERNAME
-    echo "$USERNAME:$PASSWORD" | chpasswd
+    # 5. 启动服务
+    systemctl daemon-reload
+    systemctl enable gost
+    systemctl restart gost
 
-    # 6. 启动 danted 服务
-    echo "正在启动并启用 danted 服务..."
-    systemctl enable danted
-    systemctl restart danted
+    # 6. 检查状态
+    sleep 2
+    if systemctl is-active --quiet gost; then
+        echo -e "${GREEN}服务启动成功！${NC}"
+    else
+        echo -e "${RED}服务启动失败！${NC}"
+        systemctl status gost
+        exit 1
+    fi
 
-    # 7. 开放防火墙端口
-    echo "正在开放端口 $PORT (IPv4 & IPv6)..."
-    iptables -I INPUT -p tcp --dport $PORT -j ACCEPT
-    ip6tables -I INPUT -p tcp --dport $PORT -j ACCEPT
-
-    # 8. 保存信息以备卸载 (包含密码)
-    echo "正在保存配置信息到 $INFO_FILE..."
+    # 7. 保存信息
     echo "PORT=$PORT" > $INFO_FILE
     echo "USERNAME=$USERNAME" >> $INFO_FILE
-    echo "PASSWORD=$PASSWORD" >> $INFO_FILE # 新增
+    echo "PASSWORD=$PASSWORD" >> $INFO_FILE
     chmod 600 $INFO_FILE
 
-    # 9. 显示信息 (自动调用 show_links)
-    echo ""
-    echo "✅ SOCKS5 代理安装完成"
-    show_links # 自动显示节点链接
+    show_links
 }
 
-# --- 卸载 SOCKS5 功能 ---
+# --- 卸载 ---
 uninstall_socks5() {
-    echo "--- 正在卸载 SOCKS5 代理 ---"
-
-    # 1. 停止和禁用服务
-    echo "正在停止和禁用 danted 服务..."
-    systemctl stop danted
-    systemctl disable danted
-
-    # 2. 读取保存的配置
-    if [ -f "$INFO_FILE" ]; then
-        source $INFO_FILE
-        echo "已从 $INFO_FILE 加载配置信息。"
-    else
-        echo "警告：未找到 $INFO_FILE 文件。"
-        echo "无法自动删除防火墙规则和用户，请手动操作。"
-        PORT=""
-        USERNAME=""
-    fi
-
-    # 3. 删除防火墙规则
-    if [ -n "$PORT" ]; then
-        echo "正在删除端口 $PORT 的防火墙规则..."
-        iptables -D INPUT -p tcp --dport $PORT -j ACCEPT
-        ip6tables -D INPUT -p tcp --dport $PORT -j ACCEPT
-    fi
-
-    # 4. 卸载软件包
-    echo "正在彻底卸载 dante-server..."
-    apt remove --purge dante-server -y
-    apt autoremove -y
-
-    # 5. 删除用户
-    if [ -n "$USERNAME" ]; then
-        echo "正在删除用户 $USERNAME..."
-        userdel $USERNAME
-    fi
-
-    # 6. 清理残留文件
-    echo "正在清理残留文件..."
-    rm -f /var/log/danted.log
+    echo -e "${YELLOW}正在卸载...${NC}"
+    systemctl stop gost
+    systemctl disable gost
+    rm -f $SERVICE_FILE
+    rm -f $BIN_PATH
     rm -f $INFO_FILE
-
-    echo "✅ SOCKS5 卸载完成。"
+    systemctl daemon-reload
+    echo -e "${GREEN}卸载完成。${NC}"
 }
 
-# --- 主菜单 ---
+# --- 菜单 ---
 main_menu() {
     clear
-    echo "SOCKS5 (Dante) 代理管理脚本"
+    echo "SOCKS5 管理脚本 (GOST版)"
     echo "=========================="
+    echo "1. 安装 SOCKS5"
+    echo "2. 卸载 SOCKS5"
+    echo "3. 查看链接"
+    echo "4. 退出"
     echo ""
-    echo "请选择一个操作:"
-    echo "  1. 安装 SOCKS5 代理"
-    echo "  2. 卸载 SOCKS5 代理"
-    echo "  3. 显示 SOCKS5 节点链接"
-    echo "  4. 退出"
-    echo ""
-    read -p "请输入选项 [1-4]: " choice
-
+    read -p "选择: " choice
     case $choice in
-        1)
-            install_socks5
-            read -p "按 Enter 键返回菜单..."
-            main_menu
-            ;;
-        2)
-            uninstall_socks5
-            read -p "按 Enter 键返回菜单..."
-            main_menu
-            ;;
-        3)
-            show_links
-            read -p "按 Enter 键返回菜单..."
-            main_menu
-            ;;
-        4)
-            echo "退出。"
-            exit 0
-            ;;
-        *)
-            echo "无效选项，请重新输入。"
-            sleep 2
-            main_menu
-            ;;
+        1) install_socks5 ;;
+        2) uninstall_socks5 ;;
+        3) show_links ;;
+        4) exit 0 ;;
+        *) main_menu ;;
     esac
 }
 
-# 运行主菜单
 main_menu
