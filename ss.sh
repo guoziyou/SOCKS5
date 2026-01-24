@@ -1,5 +1,12 @@
 #!/bin/bash
 
+# ==========================================
+# Shadowsocks-libev 一键安装脚本
+# ==========================================
+
+# 1. 基础环境设置与检查
+# ------------------------------------------
+
 # 颜色定义
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -17,31 +24,49 @@ SS_METHOD="chacha20-ietf-poly1305"
 CONFIG_FILE="/etc/shadowsocks-libev/config.json"
 SERVICE_FILE="/etc/systemd/system/shadowsocks-libev.service"
 
+# 2. 用户交互与参数生成
+# ------------------------------------------
+
 # 生成随机密码
 SS_PASSWORD=$(openssl rand -base64 12)
 echo -e "${YELLOW}已生成随机密码：$SS_PASSWORD${NC}"
 
 # 提示用户输入端口
-while true; do
-    read -p "请输入 Shadowsocks 端口（1024-65535，推荐 15818）：" SS_PORT
-    SS_PORT=${SS_PORT:-15818} # 默认端口为 15818
-    if [[ "$SS_PORT" =~ ^[0-9]+$ ]] && [ "$SS_PORT" -ge 1024 ] && [ "$SS_PORT" -le 65535 ]; then
-        echo -e "${GREEN}已设置端口：$SS_PORT${NC}"
-        break
-    else
-        echo -e "${RED}错误：端口必须是 1024 到 65535 之间的数字！${NC}"
-    fi
-done
+# 注意：在一键脚本中使用 read 有时会因 stdin 被占用而跳过，
+# 这里尝试读取 /dev/tty 以确保能交互，如果非交互模式则使用默认值。
+if [ -t 0 ]; then
+    while true; do
+        read -p "请输入 Shadowsocks 端口（1024-65535，推荐 15818）：" SS_PORT
+        SS_PORT=${SS_PORT:-15818}
+        if [[ "$SS_PORT" =~ ^[0-9]+$ ]] && [ "$SS_PORT" -ge 1024 ] && [ "$SS_PORT" -le 65535 ]; then
+            echo -e "${GREEN}已设置端口：$SS_PORT${NC}"
+            break
+        else
+            echo -e "${RED}错误：端口必须是 1024 到 65535 之间的数字！${NC}"
+        fi
+    done
+else
+    # 如果是非交互模式（比如某些自动化环境），直接使用默认端口
+    SS_PORT=15818
+    echo -e "${YELLOW}检测到非交互模式，使用默认端口：$SS_PORT${NC}"
+fi
 
-# 更新系统并安装依赖 (已修复：移除了 simple-obfs)
+# 3. 安装与配置
+# ------------------------------------------
+
+# 更新系统并安装依赖
 echo -e "${YELLOW}正在更新系统并安装依赖...${NC}"
+# 增加 DEBIAN_FRONTEND=noninteractive 避免 apt 弹窗卡住脚本
+export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
 apt-get install -y shadowsocks-libev curl
 
 # 检查Shadowsocks是否安装成功
 if ! command -v ss-server &> /dev/null; then
     echo -e "${RED}错误：Shadowsocks-libev 安装失败！${NC}"
-    echo -e "${YELLOW}建议：您的系统可能过新，软件源中已不再包含旧版 SS，建议改用 Docker 安装方式。${NC}"
+    echo -e "${YELLOW}原因可能为：${NC}"
+    echo -e "1. 您的系统版本过新（如 Debian 12+），官方源已移除 SS-libev。"
+    echo -e "2. 网络连接问题导致 apt 失败。"
     exit 1
 fi
 
@@ -51,6 +76,8 @@ systemctl stop shadowsocks-libev &> /dev/null
 # 创建Shadowsocks配置文件
 echo -e "${YELLOW}正在创建Shadowsocks配置文件...${NC}"
 mkdir -p /etc/shadowsocks-libev
+
+# 直接写入配置，不再需要转义 EOF
 cat > $CONFIG_FILE <<EOF
 {
     "server":"0.0.0.0",
@@ -83,6 +110,9 @@ Restart=on-failure
 WantedBy=multi-user.target
 EOF
 
+# 4. 启动服务与展示结果
+# ------------------------------------------
+
 # 重新加载systemd并启动服务
 systemctl daemon-reload
 systemctl enable shadowsocks-libev
@@ -93,33 +123,34 @@ if systemctl is-active --quiet shadowsocks-libev; then
     echo -e "${GREEN}Shadowsocks服务已成功启动！${NC}"
 else
     echo -e "${RED}错误：Shadowsocks服务启动失败！${NC}"
-    systemctl status shadowsocks-libev
+    echo -e "请运行 'systemctl status shadowsocks-libev' 查看详细日志。"
     exit 1
 fi
 
 # 获取服务器公网IP
 SERVER_IP=$(curl -s ifconfig.me)
 if [ -z "$SERVER_IP" ]; then
-    echo -e "${YELLOW}警告：无法获取公网IP，请手动检查！${NC}"
+    echo -e "${YELLOW}警告：无法自动获取公网IP。${NC}"
     SERVER_IP="YOUR_SERVER_IP"
 fi
 
 # 生成Shadowsocks节点链接
+# 使用 base64 -w 0 防止换行
 SS_LINK=$(echo -n "$SS_METHOD:$SS_PASSWORD@$SERVER_IP:$SS_PORT" | base64 -w 0)
 SS_URI="ss://$SS_LINK"
 
 # 输出节点信息
-echo -e "\n${GREEN}Shadowsocks节点部署完成！${NC}"
-echo -e "服务器IP: ${SERVER_IP}"
-echo -e "端口: ${SS_PORT}"
-echo -e "密码: ${SS_PASSWORD}"
-echo -e "加密方式: ${SS_METHOD}"
-echo -e "节点链接: ${SS_URI}\n"
-echo -e "${YELLOW}请保存节点链接以便客户端使用！${NC}"
+echo -e "\n=================================================="
+echo -e "${GREEN} Shadowsocks 节点部署完成！ ${NC}"
+echo -e "=================================================="
+echo -e " 服务器IP : ${SERVER_IP}"
+echo -e " 端口     : ${SS_PORT}"
+echo -e " 密码     : ${SS_PASSWORD}"
+echo -e " 加密方式 : ${SS_METHOD}"
+echo -e "--------------------------------------------------"
+echo -e " SS 链接  : ${SS_URI}"
+echo -e "--------------------------------------------------"
+echo -e "${YELLOW}请立即保存上述链接！${NC}"
 
 # 提示防火墙设置
-echo -e "${YELLOW}提示：请确保防火墙允许端口 $SS_PORT (如使用 ufw：ufw allow $SS_PORT)${NC}"
-
-# 赋予权限并运行
-chmod +x ss.sh
-./ss.sh
+echo -e "${YELLOW}提示：如果无法连接，请检查防火墙是否放行端口 $SS_PORT${NC}"
