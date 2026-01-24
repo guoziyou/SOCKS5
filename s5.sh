@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ==========================================
-# SOCKS5 一键安装脚本 (GOST版 - 修复IP获取)
+# SOCKS5 一键安装脚本 (GOST版 - 暴力修正IP)
 # ==========================================
 
 # 颜色定义
@@ -35,27 +35,38 @@ url_encode() {
     echo "$encoded"
 }
 
-# --- 获取公网IP (增强版) ---
+# --- 获取公网IP (强制正则提取，杜绝HTML) ---
 get_public_ip() {
     local version=$1
-    local ip=""
-    
-    # 尝试源 1: icanhazip (最稳定)
+    local raw_content=""
+    local clean_ip=""
+
+    # IPv4 逻辑
     if [ "$version" == "4" ]; then
-        ip=$(curl -s4 -m 5 --user-agent "Mozilla/5.0" https://ipv4.icanhazip.com)
-        # 如果失败或返回了html错误，尝试源 2: ipify
-        if [ -z "$ip" ] || [[ "$ip" == *"html"* ]] || [[ "$ip" == *"DOCTYPE"* ]]; then
-            ip=$(curl -s4 -m 5 --user-agent "Mozilla/5.0" https://api.ipify.org)
+        # 尝试来源1: Amazon AWS (最纯净，几乎不封IP)
+        raw_content=$(curl -s4 --connect-timeout 5 http://checkip.amazonaws.com)
+        if [ -z "$raw_content" ]; then
+             # 尝试来源2: Icanhazip
+             raw_content=$(curl -s4 --connect-timeout 5 https://ipv4.icanhazip.com)
         fi
+        
+        # 【关键步骤】使用 Grep 强制提取 IPv4 格式，过滤所有 HTML 标签
+        clean_ip=$(echo "$raw_content" | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -n 1)
+
+    # IPv6 逻辑
     elif [ "$version" == "6" ]; then
-        ip=$(curl -s6 -m 5 --user-agent "Mozilla/5.0" https://ipv6.icanhazip.com)
-        if [ -z "$ip" ] || [[ "$ip" == *"html"* ]] || [[ "$ip" == *"DOCTYPE"* ]]; then
-            ip=$(curl -s6 -m 5 --user-agent "Mozilla/5.0" https://api64.ipify.org)
+        # 尝试来源1: Icanhazip
+        raw_content=$(curl -s6 --connect-timeout 5 https://ipv6.icanhazip.com)
+        if [ -z "$raw_content" ]; then
+             # 尝试来源2: Ipify
+             raw_content=$(curl -s6 --connect-timeout 5 https://api64.ipify.org)
         fi
+        
+        # 【关键步骤】使用 Grep 强制提取 IPv6 格式
+        clean_ip=$(echo "$raw_content" | grep -oE '([a-fA-F0-9:]{1,4}){1,8}(:[a-fA-F0-9]{1,4}){1,8}|([0-9a-fA-F]{1,4}:){1,7}:|::' | head -n 1)
     fi
 
-    # 清理可能存在的空格
-    echo $ip | tr -d '[:space:]'
+    echo "$clean_ip"
 }
 
 # --- 显示连接信息 ---
@@ -66,7 +77,7 @@ show_links() {
     fi
     source $INFO_FILE
     
-    echo -e "${YELLOW}正在获取服务器 IP...${NC}"
+    echo -e "${YELLOW}正在获取服务器 IP (这可能需要几秒钟)...${NC}"
     IPV4=$(get_public_ip 4)
     IPV6=$(get_public_ip 6)
     
@@ -76,16 +87,17 @@ show_links() {
     echo -e "状态: $(systemctl is-active gost 2>/dev/null || echo '未运行')"
     echo -e "-------------------------------------"
     
-    if [ -n "$IPV4" ] && [[ "$IPV4" != *"html"* ]]; then
+    # 只有当 IP 确实被提取到时才显示链接
+    if [ -n "$IPV4" ]; then
         echo -e "${YELLOW}IPv4 链接:${NC}"
         echo "socks5://${USERNAME}:${ENCODED_PASS}@${IPV4}:${PORT}"
     else
-        echo -e "${RED}警告: 无法获取有效 IPv4 地址 (可能无IPv4网络)${NC}"
+        echo -e "${RED}警告: 无法获取 IPv4 地址 (接口被墙或无IPv4)${NC}"
     fi
     
     echo ""
 
-    if [ -n "$IPV6" ] && [[ "$IPV6" != *"html"* ]]; then
+    if [ -n "$IPV6" ]; then
         echo -e "${YELLOW}IPv6 链接:${NC}"
         echo "socks5://${USERNAME}:${ENCODED_PASS}@[${IPV6}]:${PORT}"
     fi
@@ -95,6 +107,7 @@ show_links() {
     echo -e "用户: $USERNAME"
     echo -e "密码: $PASSWORD"
     echo -e "-------------------------------------"
+    echo -e "${YELLOW}如果上方未显示 IP，请登录 VPS 运行 'curl ifconfig.me' 手动查看 IP 并替换。${NC}"
 }
 
 # --- 安装 GOST ---
